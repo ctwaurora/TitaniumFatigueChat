@@ -2129,18 +2129,25 @@ def generate_comprehensive_answer(
             "以下内容仅为 search-guided candidate 输出。\n\n"
         )
 
-    # ── Step 3: Dispatch by mode × depth — 统一使用论文级回答骨架 ──
+    # ── Step 3: Intent Router — 识别用户真正想做什么 ──
+    from src.intent_router import classify_intent_llm, get_intent_display, get_modules_for_intents
+
     if answer_mode == "popular_science":
         answer = generate_popular_science_answer(question, ind_var, dep_var, var_class)
-        if depth == "paper_level":
-            from src.unified_answer import build_paper_level_answer
-            answer = build_paper_level_answer(question, answer_mode)
     else:
-        # 科研分析 / 假设生成 / 实验设计 / 公式解释 → 统一骨架
-        from src.unified_answer import build_paper_level_answer
-        answer = build_paper_level_answer(question, answer_mode)
+        # 使用 LLM Intent Router 识别用户意图
+        intents = classify_intent_llm(question)
+        modules = get_modules_for_intents(intents)
 
-    # ── Steps 4-8 由 build_paper_level_answer 内部处理，不再重复调用 ──
+        # 输出当前任务标识
+        intent_display = get_intent_display(intents)
+        answer = f"> **【当前任务】** {intent_display}\n\n"
+
+        # 调用对应的模块
+        from src.unified_answer import build_custom_answer
+        answer += build_custom_answer(question, modules, ind_var, dep_var, var_class)
+
+    # ── Steps 4-8 已由 Intent Router + build_custom_answer 处理 ──
     if depth != "paper_level":
         quality = quality_gate_for_specificity(answer)
         if quality["low_specificity"]:

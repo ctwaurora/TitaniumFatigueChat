@@ -618,3 +618,74 @@ def build_paper_level_answer(
     lines.append(section_hypothesis_scoring(question, ind_var, dep_var))
 
     return "".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Intent-based answer builder (按需调用)
+# ═══════════════════════════════════════════════════════════════════════
+
+MODULE_REGISTRY = {
+    "section_question_understanding": section_question_understanding,
+    "section_direct_conclusion": section_direct_conclusion,
+    "summarize_condition_evidence_for_question": summarize_condition_evidence_for_question,
+    "section_mechanism_map": section_mechanism_map,
+    "section_counter_evidence": section_counter_evidence,
+    "section_hypotheses": section_hypotheses,
+    "section_experiment_design": section_experiment_design,
+    "section_model_comparison": section_model_comparison,
+    "section_data_gaps": section_data_gaps,
+    "section_hypothesis_scoring": section_hypothesis_scoring,
+}
+
+
+def build_custom_answer(
+    question: str,
+    module_names: list,
+    ind_var: str = "",
+    dep_var: str = "",
+    var_class: str = "",
+) -> str:
+    """
+    根据模块名称列表，只调用对应的回答模块。
+
+    Args:
+        question: 用户问题
+        module_names: 需要调用的模块函数名列表
+        ind_var: 自变量（可选，会自动提取）
+        dep_var: 因变量（可选）
+        var_class: 变量关系类型
+
+    Returns:
+        只包含指定模块的 Markdown 回答
+    """
+    # 自动提取变量（如果未提供）
+    if not ind_var and not dep_var:
+        ind_var, dep_var, var_class = extract_variable_pair(question)
+
+    lines = []
+    for mod_name in module_names:
+        func = MODULE_REGISTRY.get(mod_name)
+        if func is None:
+            continue
+
+        try:
+            if mod_name == "section_question_understanding":
+                lines.append(func(question, ind_var, dep_var, var_class))
+            elif mod_name in ("section_direct_conclusion", "section_experiment_design",
+                              "section_data_gaps", "section_hypothesis_scoring"):
+                lines.append(func(ind_var, dep_var))
+            elif mod_name in ("summarize_condition_evidence_for_question",
+                              "section_mechanism_map"):
+                lines.append(func(question))
+            elif mod_name == "section_counter_evidence":
+                lines.append(func(question, ind_var, dep_var))
+            elif mod_name == "section_hypotheses":
+                lines.append(func(question, ind_var, dep_var))
+            elif mod_name == "section_model_comparison":
+                lines.append(func(question, ind_var, dep_var))
+            else:
+                lines.append(func(question, ind_var, dep_var))
+        except Exception as e:
+            lines.append(f"<!-- {mod_name} 生成异常: {e} -->\n")
+
+    return "".join(lines)
