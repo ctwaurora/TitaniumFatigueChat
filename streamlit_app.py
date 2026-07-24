@@ -2129,25 +2129,15 @@ def generate_comprehensive_answer(
             "以下内容仅为 search-guided candidate 输出。\n\n"
         )
 
-    # ── Step 3: Intent Router — 识别用户真正想做什么 ──
-    from src.intent_router import classify_intent_llm, get_intent_display, get_modules_for_intents
-
+    # ── Step 3: Page-specific answer generation ──
     if answer_mode == "popular_science":
         answer = generate_popular_science_answer(question, ind_var, dep_var, var_class)
     else:
-        # 使用 LLM Intent Router 识别用户意图
-        intents = classify_intent_llm(question)
-        modules = get_modules_for_intents(intents)
+        # 页面优先路由
+        from src.page_answers import generate_page_answer
+        answer = generate_page_answer(question, page_context=answer_mode)
 
-        # 输出当前任务标识
-        intent_display = get_intent_display(intents)
-        answer = f"> **【当前任务】** {intent_display}\n\n"
-
-        # 调用对应的模块
-        from src.unified_answer import build_custom_answer
-        answer += build_custom_answer(question, modules, ind_var, dep_var, var_class)
-
-    # ── Steps 4-8 已由 Intent Router + build_custom_answer 处理 ──
+    # ── Step 4-8: 无需额外追加 ──
     if depth != "paper_level":
         quality = quality_gate_for_specificity(answer)
         if quality["low_specificity"]:
