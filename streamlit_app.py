@@ -182,7 +182,19 @@ st.set_page_config(
 # ═══════════════════════════════════════════════════════════════════════
 
 def check_password():
-    """密码门禁：使用 st.secrets['APP_PASSWORD'] 验证。"""
+    """
+    密码门禁。
+    - 本地未配置 APP_PASSWORD：直接放行，不显示登录页。
+    - Streamlit Cloud 配置了 APP_PASSWORD：要求输入密码后进入。
+    """
+    from src.api_keys import is_password_enabled, get_app_password
+
+    # 本地没有 secrets.toml，不启用密码，直接放行
+    if not is_password_enabled():
+        return True
+
+    correct_pw = get_app_password().strip()
+
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
 
@@ -200,8 +212,6 @@ def check_password():
                              placeholder="访问密码")
 
     if st.button("登录", type="primary", use_container_width=True):
-        from src.api_keys import get_app_password
-        correct_pw = get_app_password() or ""
         if password == correct_pw:
             st.session_state["password_correct"] = True
             st.rerun()
@@ -2119,83 +2129,18 @@ def generate_comprehensive_answer(
             "以下内容仅为 search-guided candidate 输出。\n\n"
         )
 
-    # ── Step 3: Dispatch by mode × depth ──
-    question_understanding = _build_question_understanding_section(
-        question, ind_var, dep_var, var_class)
-
+    # ── Step 3: Dispatch by mode × depth — 统一使用论文级回答骨架 ──
     if answer_mode == "popular_science":
         answer = generate_popular_science_answer(question, ind_var, dep_var, var_class)
-
-    elif answer_mode == "hypothesis_generation":
-        answer = coverage_warning + generate_hypothesis_generation_answer(
-            question, ind_var, dep_var, var_class, coverage_level)
         if depth == "paper_level":
-            answer = question_understanding + answer
-
-    elif answer_mode == "experiment_design":
-        answer = generate_experiment_design_answer(question, ind_var, dep_var, var_class)
-        if depth == "paper_level":
-            answer = question_understanding + answer
-
+            from src.unified_answer import build_paper_level_answer
+            answer = build_paper_level_answer(question, answer_mode)
     else:
-        # research_analysis (default)
-        ranker = None
-        try:
-            ranker = RelevanceRanking()
-        except Exception:
-            pass
-        answer = generate_research_analysis_answer(
-            question, ind_var, dep_var, var_class, ranker, depth=depth)
+        # 科研分析 / 假设生成 / 实验设计 / 公式解释 → 统一骨架
+        from src.unified_answer import build_paper_level_answer
+        answer = build_paper_level_answer(question, answer_mode)
 
-    # ── Step 4: Add condition-mechanism map (#1 conditioned evidence, #2 mechanism competition) ──
-    if depth == "paper_level":
-        try:
-            cm_map = generate_condition_mechanism_map(
-                question=question,
-                surface_state="",
-                roughness="",
-                defect_state="",
-                heat_treatment="",
-                fatigue_regime="",
-                stress_ratio_R="",
-            )
-            if cm_map.get("entries"):
-                answer += "\n" + format_condition_map_markdown(cm_map)
-        except Exception as e:
-            pass
-
-    # ── Step 5: Add formula comparison (#8 model comparison) ──
-    if answer_mode != "popular_science" and depth == "paper_level":
-        try:
-            from src.equation_engine import extract_variables_from_query
-            detected_vars = extract_variables_from_query(question)
-            if detected_vars:
-                fc_result = compare_candidate_models(
-                    question=question,
-                    detected_variables=detected_vars,
-                )
-                if fc_result.get("comparisons"):
-                    answer += "\n" + format_model_comparison_markdown(fc_result)
-        except Exception as e:
-            pass
-
-    # ── Step 6: Add counter-evidence search (#3 counter-evidence) ──
-    if answer_mode != "popular_science":
-        try:
-            hypothesis_text = f"{ind_var or ''} affects {dep_var or ''} in L-PBF Ti-6Al-4V"
-            counter_result = search_counter_evidence(hypothesis=hypothesis_text)
-            if counter_result.get("supporting_evidence") or counter_result.get("counter_evidence"):
-                answer += "\n" + format_counter_evidence_markdown(counter_result)
-        except Exception as e:
-            pass
-
-    # ── Step 7: Domain research assistant analysis summary (IV/DV/CV/MV + prediction + gaps) for non-research modes ──
-    if answer_mode not in ("research_analysis", "hypothesis_generation", "experiment_design"):
-        sci_summary = _build_sci_summary_section(ind_var, dep_var, coverage_level)
-        if sci_summary:
-            answer += "\n" + sci_summary
-
-    # ── Step 8: Apply specificity quality gate ──
+    # ── Steps 4-8 由 build_paper_level_answer 内部处理，不再重复调用 ──
     if depth != "paper_level":
         quality = quality_gate_for_specificity(answer)
         if quality["low_specificity"]:
