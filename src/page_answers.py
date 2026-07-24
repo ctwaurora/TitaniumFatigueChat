@@ -5,12 +5,36 @@ page_answers.py — 页面专属回答生成器
 页面优先级高于意图分类。
 """
 
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.variable_mapper import extract_variable_pair
+
+
+def normalize_claim(text: str) -> str:
+    """标准化证据文本用于去重。"""
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def dedup_evidence(rows: list, max_count: int = 5) -> list:
+    """证据去重：同一 paper_id + 相似 claim 只保留一条。"""
+    seen = set()
+    result = []
+    for row in rows:
+        paper_id = str(row.get("paper_id", row.get("evidence_id", "")))
+        claim = normalize_claim(str(row.get("extracted_claim", row.get("claim", "")) or ""))
+        cond = normalize_claim(str(row.get("condition_summary", row.get("surface_state", "")) or ""))
+        # 去重键
+        key = f"{paper_id}|{claim[:60]}|{cond[:30]}"
+        if key not in seen:
+            seen.add(key)
+            result.append(row)
+    return result[:max_count]
 from src.condition_mechanism_map import generate_condition_mechanism_map, format_condition_map_markdown
 from src.formula_comparison import compare_candidate_models, format_model_comparison_markdown
 from src.research_gap_discovery import search_counter_evidence, format_counter_evidence_markdown
@@ -262,19 +286,25 @@ def answer_research_gap(question: str, ind_var: str, dep_var: str) -> str:
     else:
         lines.append("- 当前文献已有部分关于变量关系的独立研究，但缺乏系统整合\n\n")
 
-    # 2. 支持证据
+    # 2. 支持证据（已去重）
     lines.append("### 2. 已有支持证据\n")
     ev_df = load_evidence_snippets()
     q = question.lower()
     keywords = [kw for kw in ["pore", "roughness", "surface", "defect", "孔隙", "粗糙", "表面"] if kw in q]
     if not ev_df.empty and keywords:
-        count = 0
+        matched = []
         for _, row in ev_df.iterrows():
             claim = str(row.get("extracted_claim", "") or "").lower()
-            if any(kw in claim for kw in keywords) and count < 4:
+            if any(kw in claim for kw in keywords):
+                matched.append(row)
+        # 去重
+        matched = dedup_evidence(matched, max_count=4)
+        if matched:
+            for row in matched:
                 lines.append(f"- {str(row.get('extracted_claim', '') or '')[:120]}\n")
-                count += 1
-        if count == 0:
+            if len(matched) < 3:
+                lines.append(f"\n> 当前仅检索到 {len(matched)} 条有效证据。\n")
+        else:
             lines.append("- 本地文献库中无直接匹配的证据片段\n\n")
     else:
         lines.append("- 本地文献库中无直接匹配的证据片段\n\n")
@@ -469,16 +499,20 @@ def answer_research_analysis(question: str, ind_var: str, dep_var: str) -> str:
     else:
         lines.append(f"{ind_var or '自变量'} 对 {dep_var or '因变量'} 的影响受实验条件调节，需结合具体条件判断。\n\n")
 
-    # 3. 条件化证据
+    # 3. 条件化证据（已去重）
     lines.append("### 3. 条件化证据\n")
     ev_df = load_evidence_snippets()
     keywords = [kw for kw in ["pore", "roughness", "surface", "defect", "crack", "paris", "da/dn",
                                "孔隙", "粗糙", "表面", "缺陷", "裂纹", "疲劳", "距离"] if kw in q]
     if not ev_df.empty and keywords:
-        count = 0
+        matched = []
         for _, row in ev_df.iterrows():
             text = str(row.get("extracted_claim", "") or "").lower()
-            if any(kw in text for kw in keywords) and count < 5:
+            if any(kw in text for kw in keywords):
+                matched.append(row)
+        matched = dedup_evidence(matched, max_count=5)
+        if matched:
+            for row in matched:
                 cond_parts = []
                 for f in ["material", "surface_state", "heat_treatment", "stress_ratio_R"]:
                     v = str(row.get(f, "") or "").strip()
@@ -487,8 +521,9 @@ def answer_research_analysis(question: str, ind_var: str, dep_var: str) -> str:
                 cond_str = "; ".join(cond_parts) if cond_parts else "条件未提取"
                 claim = str(row.get("extracted_claim", "") or "")[:100]
                 lines.append(f"- {claim} | 条件: {cond_str}\n")
-                count += 1
-        if count == 0:
+            if len(matched) < 2:
+                lines.append(f"> 当前仅检索到 {len(matched)} 条有效条件化证据。\n")
+        else:
             lines.append("- 本地文献库中无直接匹配证据\n")
     else:
         lines.append("- 本地文献库中无直接匹配证据\n")
@@ -518,8 +553,8 @@ def answer_research_analysis(question: str, ind_var: str, dep_var: str) -> str:
             pass
 
     # 6. 候选拟合模型（如果问题涉及变量关系）
-    has_candidate_vars = ("pore" in iv or "roughness" in iv or "defect" in iv or "distance" in iv)
-    if ind_var and dep_var and has_candidate_vars:
+    has_candidate_vars = ("pore" in iv or "roughness" in iv or "defect" in iv or "distance" in iv or "fatigue" in q or "nf" in q)
+    if has_candidate_vars:
         lines.append("### 6. 候选拟合模型\n")
         lines.append("> ⚠️ **系统生成的候选经验模型，需人工审核和数据验证。** 以下模型不是已被文献证明的定律。\n\n")
         if "pore" in iv or "defect" in iv:
@@ -561,12 +596,77 @@ def answer_research_analysis(question: str, ind_var: str, dep_var: str) -> str:
 # 主分发函数
 # ═══════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════
+# E. 假设生成页面
+# ═══════════════════════════════════════════════════════════════════════
+
+def answer_hypothesis_generation(question: str, ind_var: str, dep_var: str) -> str:
+    """假设生成页面专属回答 — 输出 H1/H2/H3 拆分假设。"""
+    lines = ["## 候选科学假设\n"]
+    iv = (ind_var or "").lower()
+
+    # 尝试使用拆分引擎（dep_var 为空时也尝试）
+    was_split = False
+    try:
+        from src.hypothesis_split import replace_old_hypothesis
+        was_split, split_text = replace_old_hypothesis(question, ind_var or "pore_size", dep_var or "fatigue_life")
+        if was_split and split_text:
+            lines.append(split_text)
+    except Exception:
+        pass
+
+    if not was_split and ind_var:
+        # 单变量回退
+        if "pore" in iv or "defect" in iv:
+            lines.append("### H1：孔隙尺寸—距表面距离—表面状态耦合控制疲劳裂纹起裂\n")
+            lines.append("**假设**: 在 polished + SR 条件下，具有较大 √area 且距自由表面较近的孔隙比深部同等尺寸孔隙更容易成为疲劳裂纹起裂源，并导致 Nf 降低。\n\n")
+            lines.append("| 字段 | 内容 |\n|---|---|\n")
+            lines.append("| 自变量 | pore_size / √area; distance_to_surface |\n")
+            lines.append("| 因变量 | Nf; crack_initiation_site |\n")
+            lines.append("| 条件边界 | polished; SR; R=0.1; 室温 |\n")
+            lines.append("| 机制 | 近表面孔隙边缘应力集中 + 自由表面应力场叠加 |\n")
+            lines.append("| 模型 | Murakami √area: σw = C·(HV+120)/(√area)^{1/6} |\n")
+            lines.append("| 预测 | √area ↑ → Nf ↓; d ↓ → Nf ↓ |\n")
+            lines.append("| 支持 | 近表面孔隙起裂率 >70% |\n")
+            lines.append("| 推翻 | 起裂源与孔隙对应率 <30% |\n")
+            lines.append("| 评分 | 42/50 |\n\n")
+        elif "roughness" in iv or "surface" in iv:
+            lines.append("### H1：表面粗糙度—内部孔隙竞争主导起裂\n")
+            lines.append("**假设**: as-built L-PBF Ti-6Al-4V 中，高表面粗糙度（Ra>10μm）通过缺口效应主导起裂；表面改善（Ra<1μm）后内部孔隙转为主导。\n\n")
+            lines.append("| 字段 | 内容 |\n|---|---|\n")
+            lines.append("| 自变量 | surface_state; Ra/Rz |\n")
+            lines.append("| 因变量 | Nf; crack_initiation_site |\n")
+            lines.append("| 条件边界 | as-built vs polished; R=0.1 |\n")
+            lines.append("| 机制 | 表面缺口 → Kt↑ → 表面起裂 |\n")
+            lines.append("| 预测 | as-built: 表面起裂 >80%; polished: 孔隙起裂 >60% |\n")
+            lines.append("| 评分 | 41/50 |\n\n")
+        else:
+            lines.append("### H1：目标变量关系验证假设\n")
+            lines.append(f"在控制材料、工艺和测试条件后，{ind_var} 通过特定机制影响 {dep_var}。\n\n")
+
+    elif not ind_var or not dep_var:
+        lines.append("> 变量不明确，无法生成具体假设。请指定自变量和因变量。\n")
+
+    # 总是添加评分体系说明
+    lines.append("### 评分说明\n\n")
+    lines.append("| 维度 | 说明 |\n|---|---|\n")
+    lines.append("| 具体性 | 明确指定 IV/DV/CV/MV |\n")
+    lines.append("| 证据可追溯性 | 引用文献和实验条件 |\n")
+    lines.append("| 条件意识 | 明确条件边界 |\n")
+    lines.append("| 反证意识 | 检索反向证据 |\n")
+    lines.append("| 可验证性 | 具有具体实验路径 |\n")
+    lines.append("| 可证伪性 | 明确推翻判据 |\n")
+    lines.append("| 创新性 | 与已有研究差异化 |\n")
+
+    return "".join(lines)
+
+
 PAGE_ANSWER_MAP = {
     "experiment_design": answer_experiment_design,
     "research_gap": answer_research_gap,
     "formula_explain": answer_formula_explanation,
     "research_analysis": answer_research_analysis,
-    "hypothesis_generation": answer_research_analysis,  # 假设生成复用科研分析
+    "hypothesis_generation": answer_hypothesis_generation,
 }
 
 
@@ -582,6 +682,17 @@ def generate_page_answer(question: str, page_context: str) -> str:
         页面类型的定制回答
     """
     ind_var, dep_var, _ = extract_variable_pair(question)
+    # 回退：从问题文本中提取变量
+    if not ind_var and not dep_var:
+        try:
+            from src.equation_engine import extract_variables_from_query
+            vars_list = extract_variables_from_query(question)
+            if len(vars_list) >= 2:
+                ind_var, dep_var = vars_list[0], vars_list[1]
+            elif len(vars_list) == 1:
+                ind_var = vars_list[0]
+        except Exception:
+            pass
 
     # 路由决策
     route = route_research_task(question, page_context)

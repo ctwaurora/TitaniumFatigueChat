@@ -2617,16 +2617,9 @@ if current_page == "search":
             vars_html = f"<span style='font-size:0.85rem; color:#888;'>关注变量：{ind_var or '?'} → {dep_var or '?'}</span>"
             st.markdown(vars_html, unsafe_allow_html=True)
         st.divider()
-        if DEMO_MODE:
-            # DEMO_MODE: 长回答默认折叠
-            ans = st.session_state.answer
-            short = ans[:300] + "..." if len(ans) > 300 else ans
-            st.markdown(short)
-            with st.expander("📖 展开完整回答", expanded=False):
-                st.markdown(ans)
-        else:
-            with st.container():
-                st.markdown(st.session_state.answer)
+        # 答案仅渲染一次（方案 A：直接显示完整回答）
+        with st.container():
+            st.markdown(st.session_state.answer)
 
         # Collapsible evidence details
         with st.expander("📄 后台数据详情（点击展开）"):
